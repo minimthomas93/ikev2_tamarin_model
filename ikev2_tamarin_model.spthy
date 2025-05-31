@@ -1,0 +1,361 @@
+theory ikev2
+
+begin
+
+builtins: diffie-hellman, hashing, signing,symmetric-encryption
+functions: pk/1
+functions: kdf/1
+functions: mac/2
+functions: sign/2
+functions: h/1
+functions:senc/2
+functions:sdec/2
+
+///For proving the model please use --derivcheck-timeout=0 to deactivate for no timeout.
+/*Ex 1.a) Model the initialization of key pairs (sk,pk) and identities (A,B). Both A and B should 
+ be able to play the role of the initiator and the responder. */
+
+rule initialize_Key_identity:
+    let
+        pkID = pk(~skID)                                                  //Calculate public key
+    in
+    [Fr(~skID)]                                                           //Generate random private key
+    --[InitilizeKeyPair($ID, ~skID, pkID),SecretKey(~skID)]->
+    [
+    !PrivKey($ID,~skID),                                                  //Store Identity and private key as peristent fact
+    !PubKey($ID, pkID),                                                   //Store Identity and public key as peristent fact
+    Out(pkID)]                                                            //Send public key
+
+
+ //Key Reveals as defined in the adversary model - Action facts in the key reveal facts are used in agreement lemmas.
+
+rule reveal_secretKey:
+    [
+        !PrivKey($ID,skID)                                              //Retrieve persitant fact for ID and secret key
+    ]
+    --[RevealskID($ID)]->
+    [Out(skID)]                                                         //Send secret key 
+
+rule reveal_dh_key:
+    [
+        !St_SecretKey($ID,a)                                            //Retrieve persitant fact for ID and diffie helman secret key    
+    ]
+    --[Reveal_dh_key($ID)]->
+    [
+        Out(a)                                                         //Send diffie helman secret key 
+    ]
+
+//Ex 1.b - Model the full protocol specified in Figure.
+
+/* A sends INIT request */
+rule step1_Send_INIT_A:
+    let 
+        gxA = 'g'^~x                                //Calculate gxA = 'g'^~x
+        msg1 = <'INIT',$SA_A,gxA,~nA,~infoA>       //define msg1 which includes all the parameters in the step1 of the protocol
+    in
+        [
+        Fr(~x),                                     //Generate random diffie helman secret key x for initiator
+        Fr(~nA),                                    //Generate random nonce nA for initiator
+        Fr(~infoA),                                 //Generate random infoA for initiator
+        !PubKey($A, pkA),                           //Retrieve persitant fact for ID A and its corresponding public key
+        !PubKey($B, pkB),                           //Retrieve persitant fact for ID B and its corresponding public key
+        !PrivKey($A,skA)                            //Retrieve persitant fact for ID A and its corresponding secret key
+        ]
+        --[SendInitRequestA(msg1),KeyExchangeAB($A,$B),KeyPairForA($A,pkA),KeyPairForB($B,pkB),Store_SecretKeyX($A,~x)
+        ]->
+        [
+            StateInitA(gxA,~nA,~infoA),               //Store diffie helman public value gxA, nonce and meta info of A as linear fact
+            !St_SecretKey($A,~x),                    //Retrieve persitant fact for ID A and its corresponding diffe helman secret key
+            Out(msg1)                                //Send msg - first message in the protocol
+
+        ]
+
+//B replies with INIT cookie
+rule step2_Send_INIT_B_Cookie:
+    let 
+        msg1 = <'INIT',$SA_A,gxA,nA,infoA>          //define first message which sent in the before rule
+        msg2=<'INIT',~cookieB>                      //define second message in the protocol with INTI and cookie of B
+    in
+        [Fr(~cookieB),                              //Generate random cookie value for responder,B
+        In(msg1),                                   //Receive message sent by A - msg1
+        !PubKey($B, pkB),                           //Retrieve persitant fact for ID B and its corresponding public key
+        !PubKey($A, pkA)                            //Retrieve persitant fact for ID A and its corresponding public key
+        ]
+    --[ReceiveInitRequestA(msg1),SendInitCookieB(msg2)]->
+        [Out(msg2),                                 //send second message with cookie of B and INIT
+        Init_st_B(gxA,nA,infoA,~cookieB)]           //Store gxA,nA,infoA,~cookieB as linear fact
+
+// A sends INIT request with cookie
+rule step3_Send_INIT_A_cookie:
+    let
+        msg1 = <'INIT',$SA_A,gxA,nA,infoA>                  //define first message which sent in the before rule          
+        msg2 = <'INIT',cookieB>                             //define second message in the protocol with INTI and cookie of B
+        msg3 = <'INIT', ~cookieA, $SA_A, gxA, nA, infoA>    //define third message in the protocol which includes INIT, Cookie of A,set of Algorithms,nonce of A, Meta information
+    in
+        [Fr(~cookieA),                                      //Generate random cookie value for responder,A
+        In(msg2),                                           //Receives second message of the protocol send by B to A
+        StateInitA(gxA,nA,infoA)                            //Retrieves the linear fact which is stored in the before rule of A
+        ]
+    --[ReceiveInitCookieB(msg2),SendInitCookieA(msg3)]->
+        [Out(msg3),                                         //send third message with cookie of A and all other parameters in the third step of protocol
+        St_ValuesOfA($SA_A,~cookieA,cookieB,gxA,nA,infoA)]  //Stores values of A and values received by B as linear fact
+
+// B sends final INIT response
+rule step4_Send_INIT_B_Final:
+    let 
+        gxB = 'g'^~y                                        //Calculate gxB = 'g'^~y
+        msg3 = <'INIT', cookieA, $SA_A, gxA, nA, infoA>     //define third message which sent in the before rule
+        msg4 = <'INIT',$SA_B,gxB,~nB,~infoB>                //define fourth message in the step 4 of the protocol
+    in
+        [
+        Fr(~y),                                             //Generate random y - diffie helman secret value of B
+        Fr(~nB),                                            //Generate nonce value for B
+        Fr(~infoB),                                         //Generate meta information value for B - infoB
+        In(msg3),                                           //Receives third message of the protocol sent by A in the figure of the protocol
+        !PubKey($A, pkA),                                   //Retrieve persitant fact for ID A and its corresponding public key
+        !PubKey($B, pkB),                                   //Retrieve persitant fact for ID B and its corresponding public key
+        Init_st_B(gxA,nA,infoA,cookieB)                     //Retrive linear fact which is stored in last rule of B
+        ]
+    --[ReceiveInitCookieA(msg3),SendInitFinalB(msg4),KeyExchangeBA($B,$A),StoreSecretKeyY($B,~y)]->
+        [
+        Out(msg4),                                                               //Send fourth message
+        St_ValuesWithCookie(gxB,gxA,nA,~nB,~infoB,infoA,cookieA,cookieB),        //Store values as linear fact
+        !St_SecretKey($B,~y)                                                    //Retrieve persitant fact for ID B and its corresponding diffe helman secret key
+        ]
+
+// A computes transcript and sends AUTH
+rule step5_Send_AUTH_A:
+    let
+        k=(gxB^x)                                           //Calculate the shared key, k using diffie helman public key of B
+        msg4 = <'INIT',$SA_B,gxB,nB,infoB>                  //define fourth message of the protocol
+        k3=kdf(<k,nA,nB,'3'>)                               //Calculate k3
+        MAC_A = mac(pkA,k3)                                 //Calculate MAC value for A using public key of A and k3
+        hash_valueA=(<$SA_A, gxA, nA, infoA,nB>)            
+        hash_valueA_Intermediate = (<hash_valueA,MAC_A>)    
+        hash_valueA_Final= h(hash_valueA_Intermediate)      //Calculate hash value for A for transcript
+        transcriptA = <cookieA,hash_valueA_Final>           // the cookie of A is added to the first position of the transcript.
+        signA = sign(transcriptA,skA)                       //Sign transcript encrypted with secret key of A
+        k1=kdf(<k,nA,nB,'1'>)                               //Calculate k1
+        msg5=senc(<'AUTH',pkA,signA>,k1)                    //Define message in the step 5 of the protocol
+    in  
+        [
+        In(msg4),                                           //receives message 4 - sent by intitiator
+        !St_SecretKey($A,x),                                //Retrieve persitant fact for ID A and its corresponding diffe helman secret key
+        !PubKey($A, pkA),                                   //Retrieve persitant fact for ID A and its corresponding public key
+        St_ValuesOfA($SA_A,cookieA,cookieB,gxA,nA,infoA),   //Retrieve the stored value of A
+        !PrivKey($A,skA),                                   //Retrieve persitant fact for ID A and its corresponding secret key
+        !PubKey($B,pkB)                                     //Retrieve persitant fact for ID B and its corresponding public key
+        
+        ]
+    --[ReceiveMessageFromB(msg4),ComputeSignA(signA),ComputeTranscriptA($A,$B,transcriptA),SendTranscriptAndAuthA($A,$B,msg5),
+        SecretkeyValue($A,k),SecretKeyK1(k1),SecretKeyK3(k3),Completed('AUTH',$A,$B,signA)
+        ]->
+        
+        [
+            Out(<msg5>),                                    //Send message
+            St_TranscriptValuesinA(k1,k3,transcriptA,signA,gxA,gxB,nA,nB,infoA,infoB,cookieA,cookieB), //Store values in A as linear fact
+            !St_SecretFinalKey($A,k)                        //Store persitant fact for ID A and its shared key,k
+        ]
+        
+//B computes transcript and sends AUTH
+rule step6_Send_AUTH_B:
+    let
+
+        k=(gxA^y)                                               //Calculate the shared key, k using diffie helman public key of A
+        k3=kdf(<k,nA,nB,'3'>)                                   //Calculate k3
+        MAC_A = mac(pkA,k3)                                     //define Mac of A as defined in the previous rule of A
+        hash_valueA=(<$SA_A, gxA, nA, infoA,nB>)
+        hash_valueA_Intermediate = (<hash_valueA,MAC_A>)
+        hash_valueA_Final= h(hash_valueA_Intermediate)
+        transcriptA = <cookieA,hash_valueA_Final>               //Define Transcript of A
+        signA = sign(transcriptA,skA)                           //Signed value of A with Transcript
+        k1=kdf(<k,nA,nB,'1'>)                                   //Calculate k1
+        msg5=senc(<'AUTH',pkA,signA>,k1)                        //Define 5th message of the protocol send by A to B
+        derivedmsg5=sdec(senc(<'AUTH',pkA,signA>,k1),k1)        
+        derivedsignA = verify(signA,pkA,true)
+        k4=kdf(<k,nA,nB,'4'>)                                   //Calculate k4
+        MAC_B = mac(pkB,k4)                                     //Calculate MAC value for B using public key of B and k4
+        hash_valueB=(<$SA_B, gxB, nB, infoB, nA>)
+        hash_valueB_Final= (<hash_valueB,MAC_B>)
+        transcriptB = h(hash_valueB_Final)                      //Define Transcript of B
+        signB = sign(transcriptB,skB)                           //Signing the transcript of B using secret key of B
+        k2=kdf(<k,nA,nB,'2'>)                                   //Calculate k2
+        msg6=senc(<'AUTH',pkB,signB>,k2)                        //Define message of step 6 of the protocol
+        
+    in
+        [
+        !St_SecretKey($B,y),                                //Retrieve persitant fact for ID B and its corresponding diffe helman secret key
+        In(msg5),                                           //Receives message 5 sent by A
+        !PubKey($A,pkA),                                    //Retrieve persitant fact for ID A and its corresponding public key
+        !PubKey($B, pkB),                                   //Retrieve persitant fact for ID B and its corresponding public key
+        !PrivKey($B,skB),                                   //Retrieve persitant fact for ID B and its corresponding secret key
+        St_ValuesWithCookie(gxB,gxA,nA,nB,infoB,infoA,cookieA,cookieB)  //Retrieving the state of B having stored values
+        ]
+    --[ReceiveTranscriptAndAuthA($B,$A,msg5),ReceiveTranscriptA($B,$A,transcriptA),ReceiveSignA(signA),ComputeSignB(signB),
+        ComputeTranscriptB($B,$A,transcriptB),SendTranscriptAndAuthB($B,$A,msg6),SecretkeyValue($B,k),SecretKeyK2(k2),SecretKeyK4(k4),
+        Completed('AUTH',$B,$A,signB)
+    ]->
+        [
+        Out(msg6),                                        //Send message 6
+        !St_SecretFinalKey($B,k)                          //Store persitant fact for ID B and its shared key,k
+        ]
+
+//A receives transcript from B
+rule step7_ReceiveAUTHB_A:
+    let
+        k=kdf(gxB^x)                                         //Define shared key, k of A
+        k2=kdf(<k,nA,nB,'2'>)                           //Define k2
+        k4=kdf(<k,nA,nB,'4'>)                           //Define k4
+        MAC_B = mac(pkB,k4)                             //Define Mac value for B
+        hash_valueB=(<$SA_B, gxB, nB, infoB, nA>)
+        hash_valueB_Final= (<hash_valueB,MAC_B>)
+        transcriptB = h(hash_valueB_Final)              //Define TrancriptB calculated by B
+        msg6=senc(<'AUTH',pkB,signB>,k2)                //Define message 6 send by B
+        derivedmsg6=sdec(senc(<'AUTH',pkB,signB>,k2),k2)
+        derivedsignB=verify(signB,pkB,true)
+    in
+        [
+        !St_SecretFinalKey($A,k),                                                               //Retrieve persitant fact for ID A and its shared key,k
+        !PubKey($B,pkB),                                                                        //Retrieve persitant fact for ID B and its corresponding public key
+        In(msg6),                                                                               //receive message 6 which is sent by B
+        St_TranscriptValuesinA(k1,k3,transcriptA,signA,gxA,gxB,nA,nB,infoA,infoB,cookieA,cookieB) //retrieve the state of A with a different values
+        ]
+    --[ReceiveTranscriptAndAuthB($A,$B,msg6),ReceiveTranscriptB($A,$B,transcriptB),DerivedMessage6('AUTH',pkB,signB,k2),
+    DeriveSignB(signB,derivedsignB)]->
+        []
+
+//Ex 1.b restriction to ensure that neither party is able to perform a key exchange with themselves.
+restriction NoSelfKeyExchange:
+"   All X #i. KeyExchangeAB(X,X) @i ==> F               //X can be A or B - But both IDs cannot be same means same party cannot exchange to themselves.
+"
+
+//Ex 1.c Restriction to only allow one single session per key pair
+restriction OneSessionPerKeyPair:
+"   All A B pkA pkB #i #j.
+    KeyPairForA(A,pkA) @ #i                        //Protocol starts with the identity A and its public key,pkA 
+    & KeyPairForB(B,pkB) @ #j                      //Protocol starts with the identity B and its public key,pkB
+    ==> #i = #j                                    //Both time points should be same indicates that if A is using pkA, B also engage in the session using the key pkB-means allow only allow one single session per key pair
+"
+
+//Ex 1.d  Lemma to make sure that both parties are able to reach the end of an execution
+lemma ReachEndOfProtocol:
+exists-trace
+" Ex A B skA pkA skB pkB msg1 msg2 signA signB #i #j #k #l #m.
+    InitilizeKeyPair(A, skA, pkA) @ #i
+ &  InitilizeKeyPair(B, skB, pkB) @ #i
+ &  SendInitRequestA(msg1) @#j
+ & SendInitCookieB(msg2) @#k
+ & Completed('AUTH',A,B,signA) @#l
+ & Completed('AUTH',B,A,signB) @#m
+ & (#i < #j)
+ & (#j < #k) 
+ & (#k < #l)
+ & (#l < #m)
+"
+
+/* Ex 1.e Model six different agreement lemmas, where at least two of them should be agreements on sent messages 
+and at least one should be a transcript agreement.
+*/
+
+//lemma to check if B receiving msg5 sent by A at time point i, A should send the message at time point j and j should be before i
+
+ lemma SendAuthMessageFromA:
+ " All A B msg5 #i .
+ ReceiveTranscriptAndAuthA(B,A,msg5)@i
+ & not (Ex A #r. RevealskID(A)@r)
+ & not (Ex B #r. RevealskID(B)@r)
+ & not (Ex A #r. Reveal_dh_key(A)@r)
+ & not (Ex B #r. Reveal_dh_key(B)@r)
+ ==> (Ex msg5 #j. SendTranscriptAndAuthA(A,B,msg5)@j & j < i)
+ "
+
+ //lemma to check if A receiving msg6 send by B at time point i, B should send the message at time point j and j should be before i
+
+ lemma SendAuthMessageFromB:
+ " All A B msg6 #i .
+ ReceiveTranscriptAndAuthB(A,B,msg6)@i
+ & not (Ex A #r. RevealskID(A)@r)
+ & not (Ex B #r. RevealskID(B)@r)
+ & not (Ex A #r. Reveal_dh_key(A)@r)
+ & not (Ex B #r. Reveal_dh_key(B)@r)
+ ==> (Ex msg6 #j. SendTranscriptAndAuthB(B,A,msg6)@j & j < i)
+ "
+
+
+//lemma to check if B receiving signA send by A at time point i, A should send the message with SignA at time point j and j should be before i
+
+lemma signatureOfA_Agreement:
+" All signA #i.
+    ReceiveSignA(signA) @i
+    & not (Ex A #r. RevealskID(A)@r)
+    & not (Ex B #r. RevealskID(B)@r)
+    & not (Ex A #r. Reveal_dh_key(A)@r)
+    & not (Ex B #r. Reveal_dh_key(B)@r)
+    ==> (Ex #j. ComputeSignA(signA)@j & j < i)
+"
+
+//lemma to check if A receiving signB send by B at time point i, B should send the message with SignB at time point j and j should be before i
+
+lemma signatureOfB_Agreement:
+" All signB derivedsignB #i.
+    DeriveSignB(signB,derivedsignB) @i
+    & not (Ex A #r. RevealskID(A)@r)
+    & not (Ex B #r. RevealskID(B)@r)
+    & not (Ex A #r. Reveal_dh_key(A)@r)
+    & not (Ex B #r. Reveal_dh_key(B)@r)
+    ==> (Ex #j. ComputeSignB(signB)@j & (j<i))
+"
+
+
+//lemma to check if B receiving trancriptA send by A at time point i, A should compute the trancriptA at time point j and j should be before i
+
+lemma transcriptAgreementAandB:
+" All transcriptA A B #k.
+    ReceiveTranscriptA(B,A,transcriptA)@k
+    & not (Ex A #r. RevealskID(A)@r)
+    & not (Ex B #r. RevealskID(B)@r)
+    & not (Ex A #r. Reveal_dh_key(A)@r)
+    & not (Ex B #r. Reveal_dh_key(B)@r)
+    ==> (Ex k #j.SecretkeyValue(A,k) @#j & ComputeTranscriptA(A,B,transcriptA) @j & (j<k))
+"
+
+//lemma to check if A receiving trancriptB send by B at time point i, B should compute the trancriptB at time point j and j should be before i
+
+lemma transcriptAgreementBandA:
+" All transcriptB B A #k.
+    ReceiveTranscriptB(A,B,transcriptB)@k
+    & not (Ex A #r. RevealskID(A)@r)
+    & not (Ex B #r. RevealskID(B)@r)
+    & not (Ex A #r. Reveal_dh_key(A)@r)
+    & not (Ex B #r. Reveal_dh_key(B)@r)
+    ==> (Ex k #j.SecretkeyValue(A,k) @#j & ComputeTranscriptB(B,A,transcriptB) @j & (j<k))
+"
+
+//Ex 1.f Try to prove key secrecy for each key
+ lemma secrecy_SecretKeys:
+ " All skA skB x y A B k k1 k2 k3 k4 #f #g #i #j #l #m #o #p.
+ SecretKey(skA) @#f
+ &SecretKey(skB) @#g
+ &Store_SecretKeyX(A,x) @#i
+ &SecretkeyValue(A,k) @#i
+ &StoreSecretKeyY(B,y) @#j
+ &SecretkeyValue(B,k) @#j
+ &SecretKeyK1(k1) @#l
+ &SecretKeyK2(k2) @#m
+ &SecretKeyK3(k3) @#o
+ &SecretKeyK4(k4) @#p
+ ==> ( 
+not (Ex #n. K(skA) @#n)
+ & not(Ex #n. K(skB) @#n)
+ & not (Ex #n. K(x) @#n)
+ & not(Ex #n. K(y) @#n)
+ & not(Ex #n. K(k) @#n)
+ & not(Ex #n. K(k1) @#n)
+ & not(Ex #n. K(k2) @#n)
+ & not(Ex #n. K(k3) @#n)
+ & not(Ex #n. K(k4) @#n)
+ )
+ "
+
+
+end
